@@ -8,17 +8,28 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"time"
 
 	"github.com/spf13/pflag"
 )
 
 func main() {
-	var insecure bool
+	var (
+		insecure  bool
+		userAgent string
+		timeout   time.Duration
+	)
 	pflag.BoolVarP(&insecure, "insecure", "k", false, "ignore TLS verification error")
+	pflag.StringVarP(&userAgent, "user-agent", "A", "", "user agent")
+	pflag.DurationVarP(&timeout, "timeout", "t", 5*time.Second, "timeout")
 	pflag.Parse()
 
+	client := http.Client{
+		Timeout: timeout,
+	}
+
 	if insecure {
-		http.DefaultClient.Transport = &http.Transport{
+		client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
@@ -27,7 +38,19 @@ func main() {
 
 	results := make(map[string]Result, len(pflag.Args()))
 	for _, target := range pflag.Args() {
-		resp, err := http.Get(target)
+		req, err := http.NewRequest(http.MethodGet, target, nil)
+		if err != nil {
+			results[target] = Result{
+				Error: fmt.Errorf("failed to create request: %w", err).Error(),
+			}
+			continue
+		}
+
+		if userAgent != "" {
+			req.Header.Set("User-Agent", userAgent)
+		}
+
+		resp, err := client.Do(req)
 		if err != nil {
 			results[target] = Result{
 				Error: fmt.Errorf("failed to get: %w", err).Error(),

@@ -5,9 +5,9 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -17,10 +17,12 @@ func main() {
 	var (
 		insecure  bool
 		userAgent string
+		proxy     URL
 		timeout   time.Duration
 	)
 	pflag.BoolVarP(&insecure, "insecure", "k", false, "ignore TLS verification error")
 	pflag.StringVarP(&userAgent, "user-agent", "A", "", "user agent")
+	pflag.VarP(&proxy, "proxy", "x", "proxy")
 	pflag.DurationVarP(&timeout, "timeout", "t", 5*time.Second, "timeout")
 	pflag.Parse()
 
@@ -28,13 +30,16 @@ func main() {
 		Timeout: timeout,
 	}
 
+	var transport http.Transport
 	if insecure {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
 		}
 	}
+	if proxy.String() != "" {
+		transport.Proxy = http.ProxyURL((*url.URL)(&proxy))
+	}
+	client.Transport = &transport
 
 	results := make(map[string]Result, len(pflag.Args()))
 	for _, target := range pflag.Args() {
@@ -58,10 +63,10 @@ func main() {
 			continue
 		}
 
-		n, err := io.Copy(ioutil.Discard, resp.Body)
+		b, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			results[target] = Result{
-				Error: fmt.Errorf("failed to discard body: %w", err).Error(),
+				Error: fmt.Errorf("failed to read body: %w", err).Error(),
 			}
 			continue
 		}
@@ -74,8 +79,10 @@ func main() {
 
 		result := Result{
 			Status:        resp.Status,
-			ContentLength: n,
+			ContentLength: len(b),
 		}
+
+		_ = json.Unmarshal(b, &result.Body)
 
 		if resp.TLS != nil {
 			result.TLS = newState(resp.TLS)
@@ -89,10 +96,11 @@ func main() {
 }
 
 type Result struct {
-	Status        string `json:",omitempty"`
-	ContentLength int64  `json:",omitempty"`
-	Error         string `json:",omitempty"`
-	TLS           *State `json:",omitempty"`
+	Status        string      `json:",omitempty"`
+	ContentLength int         `json:",omitempty"`
+	Body          interface{} `json:",omitempty"`
+	Error         string      `json:",omitempty"`
+	TLS           *State      `json:",omitempty"`
 }
 
 type State struct {
@@ -191,4 +199,23 @@ type name struct {
 	PostalCode         []string `json:",omitempty"`
 	SerialNumber       string   `json:",omitempty"`
 	CommonName         string   `json:",omitempty"`
+}
+
+type URL url.URL
+
+func (u *URL) String() string {
+	return (*url.URL)(u).String()
+}
+
+func (u *URL) Set(raw string) error {
+	v, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	*u = URL(*v)
+	return nil
+}
+
+func (u *URL) Type() string {
+	return "URL"
 }
